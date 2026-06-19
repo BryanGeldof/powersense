@@ -3,7 +3,7 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector
 from .const import DOMAIN, CONF_P1_SENSOR
 
-class PowerSenseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for PowerSense AI Engine."""
     VERSION = 1
 
