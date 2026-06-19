@@ -81,6 +81,48 @@ class PowerSenseCard extends HTMLElement {
     }
 
     this.querySelector('#active-list').innerHTML = listHtml;
+
+    // ---- NIEUW: Onbekende clusters labelen vanuit de kaart ----
+    let clusterHtml = "";
+    if (attrs.temporary_clusters) {
+      for (const [clusterId, cluster] of Object.entries(attrs.temporary_clusters)) {
+        clusterHtml += `
+          <div style="display: flex; gap: 6px; align-items: center; background: rgba(33, 150, 243, 0.1); padding: 6px 8px; border-radius: 4px; margin-bottom: 6px;">
+            <span style="flex-shrink: 0;">❓ ${cluster.mean_watt} W</span>
+            <input type="text" placeholder="Naam apparaat..." id="input-${clusterId}" style="flex: 1; padding: 4px; border-radius: 4px; border: 1px solid var(--divider-color); min-width: 0;">
+            <button data-cluster="${clusterId}" class="btn-save" style="padding: 4px 8px; border-radius: 4px; border: none; background: #4CAF50; color: white; cursor: pointer; flex-shrink: 0;">Opslaan</button>
+            <button data-cluster="${clusterId}" class="btn-ignore" style="padding: 4px 8px; border-radius: 4px; border: none; background: #9E9E9E; color: white; cursor: pointer; flex-shrink: 0;">Onbekend</button>
+          </div>`;
+      }
+    }
+    if (!clusterHtml) {
+      clusterHtml = `<div style="color: var(--secondary-text-color); font-style: italic;">Geen nieuwe onbekende apparaten op dit moment.</div>`;
+    }
+
+    if (!this.querySelector('#unknown-clusters')) {
+      this.content.insertAdjacentHTML('beforeend', `
+        <hr style="border: 0; border-top: 1px solid var(--divider-color); margin: 15px 0;">
+        <div style="font-weight: bold; margin-bottom: 8px;">Nog Niet Herkend:</div>
+        <div id="unknown-clusters"></div>
+      `);
+    }
+    this.querySelector('#unknown-clusters').innerHTML = clusterHtml;
+
+    this.querySelectorAll('.btn-save').forEach(btn => {
+      btn.onclick = () => {
+        const clusterId = btn.dataset.cluster;
+        const input = this.querySelector(`#input-${clusterId}`);
+        const name = input.value.trim();
+        if (!name) return;
+        hass.callService('powersense', 'label_cluster', { cluster_id: clusterId, name: name });
+      };
+    });
+
+    this.querySelectorAll('.btn-ignore').forEach(btn => {
+      btn.onclick = () => {
+        hass.callService('powersense', 'ignore_cluster', { cluster_id: btn.dataset.cluster });
+      };
+    });
   }
 
   getCardSize() {
