@@ -22,7 +22,7 @@ class PeakSenseClusterAnalyzer:
         self.registered_appliances = {}
         self.boost_active = False
         
-        # Bepaal het opslagpad in de Home Assistant config map
+        # Veilige opslag in de HA config map
         self.storage_path = hass.config.path("powersense_data.json")
         self._load_appliances_from_storage()
         
@@ -31,27 +31,27 @@ class PeakSenseClusterAnalyzer:
         _LOGGER.info(f"[PowerSense] Boost-modus status gewijzigd naar: {active}")
 
     def _load_appliances_from_storage(self):
-        """Laadt getrainde apparaten in bij een herstart van HA."""
+        """Laadt getrainde apparaten in bij een herstart."""
         if os.path.exists(self.storage_path):
             try:
                 with open(self.storage_path, "r") as f:
                     self.registered_appliances = json.load(f)
-                _LOGGER.info(f"[PowerSense] {len(self.registered_appliances)} apparaten succesvol ingeladen uit database.")
+                _LOGGER.info(f"[PowerSense] {len(self.registered_appliances)} apparaten ingeladen uit database.")
             except Exception as e:
                 _LOGGER.error(f"[PowerSense] Fout bij laden database: {e}")
 
     def save_appliance(self, name, mean_watt):
-        """Slaat een nieuw apparaat permanent op."""
-        self.registered_appliances[name] = {
-            "mean_watt": mean_watt,
+        """Slaat een nieuw apparaat permanent op en forceert een JSON-veilig datatype (int)."""
+        self.registered_appliances[str(name)] = {
+            "mean_watt": int(round(float(mean_watt))),
             "active": False
         }
         try:
             with open(self.storage_path, "w") as f:
                 json.dump(self.registered_appliances, f, indent=4)
-            _LOGGER.info(f"[PowerSense] Apparaat '{name}' permanent opgeslagen in database.")
+            _LOGGER.info(f"[PowerSense] Apparaat '{name}' permanent opgeslagen.")
         except Exception as e:
-            _LOGGER.error(f"[PowerSense] Fout bij opslaan database: {e}")
+            _LOGGER.error(f"[PowerSense] Kritieke fout bij JSON dump: {e}")
 
     def _get_suggestion(self, wattage):
         for item in APPLIANCE_SUGGESTIONS:
@@ -60,6 +60,12 @@ class PeakSenseClusterAnalyzer:
         return "Onbekend type apparaat"
 
     def process_reading(self, current_total):
+        # Forceer invoer naar float om berekeningsfouten te voorkomen
+        try:
+            current_total = float(current_total)
+        except (ValueError, TypeError):
+            return 0, 0
+
         if self.last_total_power is None:
             self.last_total_power = current_total
             return 0, current_total
@@ -76,72 +82,75 @@ class PeakSenseClusterAnalyzer:
         best_negative_match = None
         best_negative_diff = float("inf")
 
-        # Eerste ronde: Bereken verbruik van actieve apparaten & zoek naar uitschakelingen
-        for name, app in self.registered_appliances.items():
-            if app["active"]:
-                # Upgrade 1: Fuzzy matching voor uitschakeling (staat ook kleine afwijkingen toe bij spanningsval)
-                expected_drop = -app["mean_watt"]
-                diff = abs(delta_p - expected_drop)
-                
-                # Check of het binnen een ruime foutmarge valt (bijv. max 15% of 50W afwijking bij uitschakelen)
-                if diff < best_negative_diff and (diff <= (app["mean_watt"] * 0.15) or diff <= 50):
-                    best_negative_diff = diff
-                    best_negative_match = name
-                
-                active_isolated_wattage += app["mean_watt"]
-            else:
-                # Inschakeldetectie (blijft strak op de 6% const.py tolerantie)
-                if delta_p >= (app["mean_watt"] * (1 - MATCH_TOLERANCE_PERCENT)) and delta_p <= (app["mean_watt"] * (1 + MATCH_TOLERANCE_PERCENT)):
-                    app["active"] = True
-                    active_isolated_wattage += app["mean_watt"]
-                    _LOGGER.info(f"[PowerSense] Apparaat ingeschakeld: {name}")
+        # Analyseer bekende apparaten
+        if self.registered_appliances:
+            for name, app in self.registered_appliances.items():
+                if app.get("active", False):
+                    # Fuzzy matching voor uitschakeling
+                    expected_drop = -float(app["mean_watt"])
+                    diff = abs(delta_p - expected_drop)
+                    
+                    if diff < best_negative_diff and (diff <= (float(app["mean_watt"]) * 0.15) or diff <= 50):
+                        best_negative_diff = diff
+                        best_negative_match = name
+                    
+                    active_isolated_wattage += float(app["mean_watt"])
+                else:
+                    # Inschakeldetectie
+                    min_marge = float(app["mean_watt"]) * (1 - MATCH_TOLERANCE_PERCENT)
+                    max_marge = float(app["mean_watt"]) * (1 + MATCH_TOLERANCE_PERCENT)
+                    if min_marge <= delta_p <= max_marge:
+                        app["active"] = True
+                        active_isolated_wattage += float(app["mean_watt"])
+                        _LOGGER.info(f"[PowerSense] Apparaat ingeschakeld: {name}")
 
-        # Als er een duidelijke negatieve flank was, schakel het best passende apparaat uit
+        # Schakel het best passende apparaat uit bij een negatieve flank
         if delta_p < -5 and best_negative_match:
             app = self.registered_appliances[best_negative_match]
             app["active"] = False
-            active_isolated_wattage = max(0, active_isolated_wattage - app["mean_watt"])
+            active_isolated_wattage = max(0, active_isolated_wattage - float(app["mean_watt"]))
             _LOGGER.info(f"[PowerSense] Apparaat uitgeschakeld (Fuzzy Match): {best_negative_match}")
 
         unknown_rest = current_total - active_isolated_wattage - self.baseload
 
-        # Reageer op elke pure vermogenssprong boven de 5 Watt
+        # Analyseer onbekende vermogenssprongen (Zowel positief als negatief!)
         if abs(delta_p) >= 5:
             self._analyze_unknown_flank(abs(delta_p))
 
-        return active_isolated_wattage, unknown_rest
+        return int(active_isolated_wattage), int(unknown_rest)
 
     def _analyze_unknown_flank(self, flank_value):
         match_found = False
+        flank_value = float(flank_value)
         
         for cluster_id, data in self.temporary_clusters.items():
-            if math.isclose(flank_value, data["mean_watt"], rel_tol=MATCH_TOLERANCE_PERCENT):
+            if math.isclose(flank_value, float(data["mean_watt"]), rel_tol=MATCH_TOLERANCE_PERCENT):
                 data["count"] += 1
-                data["mean_watt"] = round(0.9 * data["mean_watt"] + 0.1 * flank_value)
+                data["mean_watt"] = round(0.9 * float(data["mean_watt"]) + 0.1 * flank_value)
                 data["last_seen"] = time.time()
                 match_found = True
                 
-                _LOGGER.info(f"[PowerSense] Cluster {cluster_id} herhaald! Teller: {data['count']}")
+                _LOGGER.info(f"[PowerSense] Pattern herhaald: {cluster_id} (Teller: {data['count']})")
                 
                 target_repetitions = 1 if self.boost_active else MIN_REPETITIONS_FOR_NOTIF
                 if data["count"] >= target_repetitions and not data["notified"]:
                     data["notified"] = True
-                    self._trigger_hass_notification(cluster_id, data["mean_watt"])
+                    self._trigger_hass_notification(cluster_id, int(data["mean_watt"]))
                 break
 
         if not match_found:
             new_id = f"cluster_{int(time.time())}_{round(flank_value)}"
             self.temporary_clusters[new_id] = {
-                "mean_watt": flank_value,
+                "mean_watt": int(round(flank_value)),
                 "count": 1,
                 "notified": False,
                 "last_seen": time.time()
             }
-            _LOGGER.info(f"[PowerSense] Nieuw patroon opgemerkt: {flank_value}W")
+            _LOGGER.info(f"[PowerSense] Nieuw patroon: {round(flank_value)}W")
             
             if self.boost_active:
                 self.temporary_clusters[new_id]["notified"] = True
-                self._trigger_hass_notification(new_id, flank_value)
+                self._trigger_hass_notification(new_id, int(round(flank_value)))
 
     def _garbage_collection(self):
         current_time = time.time()
@@ -153,20 +162,26 @@ class PeakSenseClusterAnalyzer:
             del self.temporary_clusters[cluster_id]
 
     def _trigger_hass_notification(self, cluster_id, wattage):
-        config_entry = self.hass.config_entries.async_entries(DOMAIN)[0]
+        # Haal de actuele config entry op om de notificatie-gsm te vinden
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            return
+        config_entry = entries[0]
         notify_device = config_entry.data.get("notification_device", "none")
         suggestion = self._get_suggestion(wattage)
 
+        # 1. UI Melding
         self.hass.components.persistent_notification.create(
             title="🤖 PowerSense: Nieuw Apparaat!",
             message=(
                 f"Ik heb een herkenbaar verbruik gevonden van circa **{wattage}W**.<br>"
                 f"**Vermoedelijk:** {suggestion}.<br><br>"
-                f"Als je de notificatie op je gsm invult, wordt dit apparaat automatisch opgeslagen!"
+                f"Vul de notificatie op je gsm in om dit permanent te labelen!"
             ),
             notification_id=f"powersense_{cluster_id}"
         )
 
+        # 2. GSM Melding
         if notify_device and notify_device != "none":
             self.hass.async_create_task(
                 self.hass.services.async_call(
