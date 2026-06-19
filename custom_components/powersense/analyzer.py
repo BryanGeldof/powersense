@@ -22,6 +22,7 @@ class PeakSenseClusterAnalyzer:
         self.registered_appliances = {}
         self.boost_active = False
         
+        # Lokale JSON database in de /config map van Home Assistant
         self.storage_path = hass.config.path("powersense_data.json")
         self._load_appliances_from_storage()
         
@@ -30,15 +31,17 @@ class PeakSenseClusterAnalyzer:
         _LOGGER.info(f"[PowerSense] Boost-modus status gewijzigd naar: {active}")
 
     def _load_appliances_from_storage(self):
+        """Laadt alle permanent opgeslagen apparaten in bij herstart."""
         if os.path.exists(self.storage_path):
             try:
                 with open(self.storage_path, "r") as f:
                     self.registered_appliances = json.load(f)
-                _LOGGER.info(f"[PowerSense] {len(self.registered_appliances)} apparaten geladen.")
+                _LOGGER.info(f"[PowerSense] {len(self.registered_appliances)} apparaten geladen uit database.")
             except Exception as e:
                 _LOGGER.error(f"[PowerSense] Database laad-fout: {e}")
 
     def save_appliance(self, name, mean_watt):
+        """Slaat een getraind apparaat op en forceert JSON-veilige datatypen."""
         self.registered_appliances[str(name)] = {
             "mean_watt": int(round(float(mean_watt))),
             "active": False
@@ -46,6 +49,7 @@ class PeakSenseClusterAnalyzer:
         try:
             with open(self.storage_path, "w") as f:
                 json.dump(self.registered_appliances, f, indent=4)
+            _LOGGER.info(f"[PowerSense] Apparaat '{name}' succesvol opgeslagen.")
         except Exception as e:
             _LOGGER.error(f"[PowerSense] JSON opslag-fout: {e}")
 
@@ -77,9 +81,11 @@ class PeakSenseClusterAnalyzer:
         best_negative_match = None
         best_negative_diff = float("inf")
 
+        # Loop door bekende database
         if self.registered_appliances:
             for name, app in self.registered_appliances.items():
                 if app.get("active", False):
+                    # Fuzzy matching voor uitschakelingen (marge van 15% of 50W)
                     expected_drop = -float(app["mean_watt"])
                     diff = abs(delta_p - expected_drop)
                     if diff < best_negative_diff and (diff <= (float(app["mean_watt"]) * 0.15) or diff <= 50):
@@ -87,6 +93,7 @@ class PeakSenseClusterAnalyzer:
                         best_negative_match = name
                     active_isolated_wattage += float(app["mean_watt"])
                 else:
+                    # Inschakeldetectie (strakke 6% marge)
                     min_marge = float(app["mean_watt"]) * (1 - MATCH_TOLERANCE_PERCENT)
                     max_marge = float(app["mean_watt"]) * (1 + MATCH_TOLERANCE_PERCENT)
                     if min_marge <= delta_p <= max_marge:
@@ -94,14 +101,16 @@ class PeakSenseClusterAnalyzer:
                         active_isolated_wattage += float(app["mean_watt"])
                         _LOGGER.info(f"[PowerSense] Ingeschakeld: {name}")
 
+        # Pas fuzzy uitschakeling toe bij negatieve flank
         if delta_p < -5 and best_negative_match:
             app = self.registered_appliances[best_negative_match]
             app["active"] = False
             active_isolated_wattage = max(0, active_isolated_wattage - float(app["mean_watt"]))
-            _LOGGER.info(f"[PowerSense] Uitgeschakeld: {best_negative_match}")
+            _LOGGER.info(f"[PowerSense] Uitgeschakeld (Fuzzy Match): {best_negative_match}")
 
         unknown_rest = current_total - active_isolated_wattage - self.baseload
 
+        # Analyseer de flank (onafhankelijk van zonnepanelen of baseload!)
         if abs(delta_p) >= 5:
             self._analyze_unknown_flank(abs(delta_p))
 
@@ -151,38 +160,45 @@ class PeakSenseClusterAnalyzer:
             return
         config_entry = entries[0]
         
-        # Verkrijg de lijst met geselecteerde apparaten (valt terug op UI als lijst leeg is)
         devices = config_entry.data.get("notification_devices", ["persistent_notification"])
         suggestion = self._get_suggestion(wattage)
 
-        # Loop door ELK geselecteerd notificatie-apparaat heen!
+        # Loop door de geselecteerde apparaten uit de Multi-Select lijst
         for device in devices:
             if device == "persistent_notification":
-                # Stuur naar de UI
-                self.hass.components.persistent_notification.create(
-                    title="🤖 PowerSense: Nieuw Apparaat!",
-                    message=f"Verbruik van circa **{wattage}W** ontdekt.<br>**Vermoedelijk:** {suggestion}.",
-                    notification_id=f"powersense_{cluster_id}"
-                )
-            elif device.startswith("notify."):
-                # Stuur naar de gsm/tablet service
-                self.hass.async_create_task(
-                    self.hass.services.async_call(
-                        "notify",
-                        device.split(".")[1],
-                        {
-                            "title": "🤖 PowerSense: Nieuw Apparaat!",
-                            "message": f"Verbruik van {wattage}W ontdekt.\nSuggestie: {suggestion}",
-                            "data": {
-                                "actions": [
-                                    {
-                                        "action": f"POWERSENSE_LABEL_{cluster_id}",
-                                        "title": "Geef naam",
-                                        "behavior": "text_input",
-                                        "text_input_button_title": "Opslaan"
-                                    }
-                                ]
-                            }
-                        }
+                try:
+                    self.hass.components.persistent_notification.create(
+                        title="🤖 PowerSense: Nieuw Apparaat!",
+                        message=f"Verbruik van circa **{wattage}W** ontdekt.<br>**Vermoedelijk:** {suggestion}.",
+                        notification_id=f"powersense_{cluster_id}"
                     )
-                )
+                    _LOGGER.info(f"[PowerSense] UI Melding aangemaakt voor {cluster_id}")
+                except Exception as e:
+                    _LOGGER.error(f"[PowerSense] UI notificatie-fout: {e}")
+                    
+            elif device.startswith("notify."):
+                try:
+                    domain_service = device.split(".")
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            domain_service[0],  # "notify"
+                            domain_service[1],  # "mobile_app_..."
+                            {
+                                "title": "🤖 PowerSense: Nieuw Apparaat!",
+                                "message": f"Verbruik van {wattage}W ontdekt.\nSuggestie: {suggestion}",
+                                "data": {
+                                    "actions": [
+                                        {
+                                            "action": f"POWERSENSE_LABEL_{cluster_id}",
+                                            "title": "Geef naam",
+                                            "behavior": "text_input",
+                                            "text_input_button_title": "Opslaan"
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+                    )
+                    _LOGGER.info(f"[PowerSense] Pushbericht gestuurd naar {device}")
+                except Exception as e:
+                    _LOGGER.error(f"[PowerSense] GSM notificatie-fout naar {device}: {e}")
