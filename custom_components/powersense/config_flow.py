@@ -13,7 +13,7 @@ class PowerSenseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title="PowerSense AI Engine", data=user_input)
 
-        # Haal alle notificatiediensten op uit Home Assistant
+        # Haal alle actieve notificatiediensten op uit Home Assistant
         all_services = self.hass.services.async_services().get("notify", {})
         
         notify_options = [
@@ -29,7 +29,7 @@ class PowerSenseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_P1_SENSOR): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             ),
-            # CRITIEKE UPGRADE: multiple=True zorgt voor de selectielijst
+            # Multi-Select dropdown om onbeperkt apparaten aan te vinken
             vol.Required("notification_devices", default=["persistent_notification"]): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=notify_options,
