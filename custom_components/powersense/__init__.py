@@ -61,10 +61,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if cluster_id in analyzer.temporary_clusters:
                     del analyzer.temporary_clusters[cluster_id]
 
-                await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     hass.bus.async_listen("mobile_app_notification_action", handle_notification_action)
 
+    # Dit is de ENIGE plek waar deze regel hoort te staan!
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
