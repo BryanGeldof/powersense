@@ -1,0 +1,38 @@
+start_boost_mode:
+  name: Start boost-modus
+  description: Activeert 60 minuten lang snelle leermodus voor nieuwe apparaten.
+
+stop_boost_mode:
+  name: Stop boost-modus
+  description: Schakelt de boost-modus handmatig uit.
+
+label_cluster:
+  name: Label onbekend apparaat
+  description: Geeft een naam aan een tijdelijk gedetecteerd verbruikscluster.
+  fields:
+    cluster_id:
+      name: Cluster ID
+      description: De interne ID van het gedetecteerde cluster.
+      required: true
+      example: "cluster_1718800000_120"
+      selector:
+        text:
+    name:
+      name: Naam
+      description: De naam die je aan het apparaat wil geven.
+      required: true
+      example: "Wasmachine"
+      selector:
+        text:
+
+ignore_cluster:
+  name: Markeer cluster als onbekend
+  description: Negeert een gedetecteerd cluster zodat er geen meldingen meer voor komen.
+  fields:
+    cluster_id:
+      name: Cluster ID
+      description: De interne ID van het gedetecteerde cluster.
+      required: true
+      example: "cluster_1718800000_120"
+      selector:
+        text:
