@@ -1,21 +1,20 @@
 DOMAIN = "powersense"
-CONF_P1_SENSOR = "p1_total_power_sensor"
 
-# Wiskundige toleranties V0.2.0
-FLANK_THRESHOLD_WATT = 5  # Extreem gevoelig voor sluipverbruik
-MATCH_TOLERANCE_PERCENT = 0.06  # 6% foutmarge voor fuzzy matching
-MIN_REPETITIONS_FOR_NOTIF = 3  
+# Vaste configuratiesleutel voor de energiemeter
+CONF_P1_SENSOR = "selected_p1_sensor"
 
-# Database & Boost beheer
-CLUSTER_MAX_AGE_SECONDS = 172800  # 48 uur bewaartijd voor ongetrainde clusters
+# AI Toleranties
+MATCH_TOLERANCE_PERCENT = 0.06
+MIN_REPETITIONS_FOR_NOTIF = 3
+CLUSTER_MAX_AGE_SECONDS = 172800  # 48 uur
 
-# Universele Wattage Suggesties Matrix
+# Suggesties matrix voor apparaten
 APPLIANCE_SUGGESTIONS = [
-    {"min": 5, "max": 30, "labels": "Modem/Router, LED verlichting, Stand-by apparaat"},
-    {"min": 31, "max": 120, "labels": "Koelkast, Diepvriezer, Ventilatiesysteem"},
-    {"min": 121, "max": 400, "labels": "Televisie, Desktop PC, Wasmachine (Trommel motor)"},
-    {"min": 401, "max": 900, "labels": "Magnetron, Grote Audioversterker, Vijverpomp"},
-    {"min": 901, "max": 1600, "labels": "Koffiezetapparaat, Haardroger (Lage stand), Stofzuiger"},
-    {"min": 1601, "max": 3000, "labels": "Waterkoker, Oven, Vaatwasser, Wasmachine (Verwarming)"},
-    {"min": 3001, "max": 8000, "labels": "Laadpaal EV, Thuisbatterij (Snel laden), Inductiekookplaat"},
+    {"min": 5, "max": 25, "labels": "Modem / Router / Stand-by apparatuur"},
+    {"min": 26, "max": 100, "labels": "Televisie / Sfeerverlichting / Laptop lader"},
+    {"min": 101, "max": 300, "labels": "Koelkast / Computer / Geluidsinstallatie"},
+    {"min": 301, "max": 800, "labels": "Magnetron / Wasmachine (spoelfase) / Diepvries"},
+    {"min": 801, "max": 1500, "labels": "Vaatwasser / Koffiezetapparaat (warmhouden) / Stofzuiger"},
+    {"min": 1501, "max": 2500, "labels": "Waterkoker / Oven / Wasmachine (verwarmen)"},
+    {"min": 2501, "max": 4000, "labels": "Laadpaal EV / Inductiekookplaat / Warmtepomp"}
 ]
