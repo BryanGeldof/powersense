@@ -1,0 +1,10 @@
+{
+  "domain": "powersense",
+  "name": "PowerSense AI Engine",
+  "codeowners": ["@BryanGeldof"],
+  "dependencies": [],
+  "config_flow": true,
+  "documentation": "https://github.com/BryanGeldof/PowerSense",
+  "iot_class": "local_polling",
+  "version": "0.2.0b1"
+}
