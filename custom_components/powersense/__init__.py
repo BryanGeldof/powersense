@@ -19,6 +19,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     analyzer = PeakSenseClusterAnalyzer(hass)
     hass.data[DOMAIN]["analyzer"] = analyzer
 
+    # MODERNE ASYNC FRONTEND REGISTRATIE (Voorkomt crashes en laadt de card correct)
+    try:
+        await hass.http.async_register_static_path(
+            "/powersense/card.js",
+            hass.config.path("custom_components/powersense/card.js"),
+            cache_headers=False
+        )
+        _LOGGER.info("[PowerSense] Frontend kaart succesvol asynchroon geregistreerd.")
+    except Exception as e:
+        _LOGGER.error(f"[PowerSense] Fout bij registreren frontend kaart: {e}")
+
     # ---- 1. SERVICE REGISTRATIE (BOOST MODUS) ----
     async def start_boost(call: ServiceCall):
         try:
@@ -33,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 _LOGGER.info("[PowerSense] Boost-modus handmatig geactiveerd via service.")
             else:
-                _LOGGER.error("[PowerSense] Kan boost-modus niet starten: Analyzer niet gevonden in hass.data.")
+                _LOGGER.error("[PowerSense] Kan boost-modus niet starten: Analyzer niet gevonden.")
         except Exception as e:
             _LOGGER.error(f"[PowerSense] Fout in start_boost_mode service: {e}")
 
@@ -74,17 +85,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     mean_wattage = active_analyzer.temporary_clusters[cluster_id]["mean_watt"]
                     active_analyzer.save_appliance(user_response, mean_wattage)
                     del active_analyzer.temporary_clusters[cluster_id]
-                else:
-                    _LOGGER.warning(f"[PowerSense] Cluster {cluster_id} niet gevonden in tijdelijk geheugen.")
 
     hass.bus.async_listen("mobile_app_notification_action", handle_notification_action)
 
-    # Laad het sensorplatform in (slechts eenmalig onderaan!)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Netjes opruimen wanneer de integratie wordt verwijderd."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop("analyzer", None)
