@@ -13,27 +13,28 @@ class PowerSenseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title="PowerSense AI Engine", data=user_input)
 
-        # Zoek direct in alle geregistreerde notificatiediensten van HA
+        # Haal alle notificatiediensten op uit Home Assistant
         all_services = self.hass.services.async_services().get("notify", {})
         
-        # Filter alle diensten die horen bij een mobiele app of gsm
-        notify_options = []
+        notify_options = [
+            {"value": "persistent_notification", "label": "Home Assistant UI (Meldingenpaneel)"}
+        ]
+        
         for service_name in all_services.keys():
             if "mobile_app" in service_name or service_name.startswith("notify_"):
-                label = service_name.replace("mobile_app_", "GSM: ").replace("_", " ").title()
+                label = service_name.replace("mobile_app_", "GSM/Tablet: ").replace("_", " ").title()
                 notify_options.append({"value": f"notify.{service_name}", "label": label})
-
-        # Voeg altijd de fallback optie toe
-        notify_options.append({"value": "none", "label": "Alleen Home Assistant UI meldingen"})
 
         data_schema = vol.Schema({
             vol.Required(CONF_P1_SENSOR): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             ),
-            vol.Optional("notification_device", default="none"): selector.SelectSelector(
+            # CRITIEKE UPGRADE: multiple=True zorgt voor de selectielijst
+            vol.Required("notification_devices", default=["persistent_notification"]): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=notify_options,
-                    mode=selector.SelectSelectorMode.DROPDOWN
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                    multiple=True
                 )
             ),
         })
