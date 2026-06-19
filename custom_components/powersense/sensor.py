@@ -14,12 +14,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         _LOGGER.error("[PowerSense] P1-sensor ID mist in de configuratie!")
         return
 
-    # Registreer het javascript-bestand in de Home Assistant HTTP-server
-    hass.http.register_static_path(
-        "/powersense/card.js",
-        hass.config.path("custom_components/powersense/card.js")
-    )
-
     rest_sensor = PowerSenseRestSensor(analyzer)
     efficiency_sensor = PowerSenseEfficiencySensor(analyzer)
     async_add_entities([rest_sensor, efficiency_sensor])
@@ -31,24 +25,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
         try:
             current_power = float(new_state.state)
-            
-            # Voer de meting door naar de AI-engine
             active_isolated, unknown_rest = analyzer.process_reading(current_power)
             
-            # Update de entiteiten direct
             rest_sensor.update_value(unknown_rest, current_power)
             efficiency_sensor.update_efficiency(active_isolated, current_power)
             
         except ValueError as e:
             _LOGGER.error(f"[PowerSense] Fout bij parsen sensorwaarde '{new_state.state}': {e}")
 
-    # Start de live tracker op de geselecteerde sensor
     async_track_state_change_event(hass, [p1_sensor_id], _async_p1_state_changed)
     _LOGGER.info(f"[PowerSense] Live tracking gestart op sensor: {p1_sensor_id}")
 
 
 class PowerSenseRestSensor(SensorEntity):
-    """Virtuele sensor voor de onbekende restwaarde."""
     def __init__(self, analyzer):
         self._analyzer = analyzer
         self._state = 0
@@ -72,7 +61,6 @@ class PowerSenseRestSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """Stuur alle data van de AI direct door naar de Lovelace frontend kaart."""
         return {
             "baseload": int(round(self._analyzer.baseload)),
             "total_power": int(round(self._current_total)),
@@ -88,7 +76,6 @@ class PowerSenseRestSensor(SensorEntity):
 
 
 class PowerSenseEfficiencySensor(SensorEntity):
-    """Virtuele sensor voor de deconstructie efficiëntie."""
     def __init__(self, analyzer):
         self._analyzer = analyzer
         self._state = 100
