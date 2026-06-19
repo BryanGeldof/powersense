@@ -1,0 +1,7 @@
+{
+  "name": "PowerSense Engine",
+  "content_in_root": false,
+  "zip_release": false,
+  "filename": "powersense",
+  "domains": ["powersense"]
+}
