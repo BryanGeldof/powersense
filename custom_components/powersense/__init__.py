@@ -53,11 +53,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if user_response:
                 _LOGGER.info(f"[PowerSense] GSM Input ontvangen voor {cluster_id}: {user_response}")
                 
-                analyzer.registered_appliances[user_response] = {
-                    "mean_watt": analyzer.temporary_clusters[cluster_id]["mean_watt"],
-                    "active": False
-                }
+                # Sla het apparaat nu permanent op via de nieuwe database-functie!
+                mean_wattage = analyzer.temporary_clusters[cluster_id]["mean_watt"]
+                analyzer.save_appliance(user_response, mean_wattage)
                 
+                # Ruim het tijdelijke cluster op
                 if cluster_id in analyzer.temporary_clusters:
                     del analyzer.temporary_clusters[cluster_id]
 
