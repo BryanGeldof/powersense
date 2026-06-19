@@ -14,6 +14,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         _LOGGER.error("[PowerSense] P1-sensor ID mist in de configuratie!")
         return
 
+    # Registreer het javascript-bestand in de Home Assistant HTTP-server
+    hass.http.register_static_path(
+        "/powersense/card.js",
+        hass.config.path("custom_components/powersense/card.js")
+    )
+
     rest_sensor = PowerSenseRestSensor(analyzer)
     efficiency_sensor = PowerSenseEfficiencySensor(analyzer)
     async_add_entities([rest_sensor, efficiency_sensor])
@@ -30,7 +36,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             active_isolated, unknown_rest = analyzer.process_reading(current_power)
             
             # Update de entiteiten direct
-            rest_sensor.update_value(unknown_rest)
+            rest_sensor.update_value(unknown_rest, current_power)
             efficiency_sensor.update_efficiency(active_isolated, current_power)
             
         except ValueError as e:
@@ -46,6 +52,7 @@ class PowerSenseRestSensor(SensorEntity):
     def __init__(self, analyzer):
         self._analyzer = analyzer
         self._state = 0
+        self._current_total = 0
 
     @property
     def name(self):
@@ -63,8 +70,20 @@ class PowerSenseRestSensor(SensorEntity):
     def unit_of_measurement(self):
         return "W"
 
-    def update_value(self, value):
+    @property
+    def extra_state_attributes(self):
+        """Stuur alle data van de AI direct door naar de Lovelace frontend kaart."""
+        return {
+            "baseload": int(round(self._analyzer.baseload)),
+            "total_power": int(round(self._current_total)),
+            "registered_appliances": self._analyzer.registered_appliances,
+            "temporary_clusters": self._analyzer.temporary_clusters,
+            "boost_active": self._analyzer.boost_active
+        }
+
+    def update_value(self, value, current_total):
         self._state = value
+        self._current_total = current_total
         self.async_write_ha_state()
 
 
