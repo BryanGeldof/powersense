@@ -15,7 +15,7 @@ class PeakSenseClusterAnalyzer:
     def __init__(self, hass):
         self.hass = hass
         self.last_total_power = None
-        self.baseload = 150
+        self.baseload = 0  # Start op 0 om directe aanpassing aan de sensor te garanderen
         self.temporary_clusters = {}
         self.registered_appliances = {}
         self.boost_active = False
@@ -35,31 +35,38 @@ class PeakSenseClusterAnalyzer:
             self.last_total_power = current_total
             return 0, current_total
 
+        # 1. Bereken de Flank (Delta P)
         delta_p = current_total - self.last_total_power
         self.last_total_power = current_total
 
         self._garbage_collection()
 
-        if current_total < self.baseload:
-            self.baseload = round(0.95 * self.baseload + 0.05 * current_total)
+        # Dynamische baseload bijstelling (past zich aan bij lagere netbelasting)
+        if current_total < self.baseload or self.baseload == 0:
+            self.baseload = current_total
 
+        # 2. Controleer actieve bekende apparaten via pariteit-matching
         active_isolated_wattage = 0
         for name, app in self.registered_appliances.items():
             if app["active"]:
+                # Uitschakeldetectie (Negatieve flank)
                 if delta_p <= -(app["mean_watt"] * (1 - MATCH_TOLERANCE_PERCENT)) and delta_p >= -(app["mean_watt"] * (1 + MATCH_TOLERANCE_PERCENT)):
                     app["active"] = False
-                    _LOGGER.info(f"[PowerSense] Apparaat uitgeschakaled: {name}")
+                    _LOGGER.info(f"[PowerSense] Apparaat uitgeschakeld: {name}")
                 else:
                     active_isolated_wattage += app["mean_watt"]
             else:
+                # Inschakeldetectie (Positieve flank)
                 if delta_p >= (app["mean_watt"] * (1 - MATCH_TOLERANCE_PERCENT)) and delta_p <= (app["mean_watt"] * (1 + MATCH_TOLERANCE_PERCENT)):
                     app["active"] = True
                     active_isolated_wattage += app["mean_watt"]
                     _LOGGER.info(f"[PowerSense] Apparaat ingeschakeld: {name}")
 
-        unknown_rest = max(0, current_total - active_isolated_wattage - self.baseload)
+        # 3. Bereken restwaarde (mag ook negatief zijn bij teruglevering!)
+        unknown_rest = current_total - active_isolated_wattage - self.baseload
 
-        if abs(delta_p) >= 5 and unknown_rest > 0:
+        # 4. Gecorrigeerde Analyse: Reageer ALTIJD als de sprong groter is dan 5 Watt, ongeacht zonnepanelen!
+        if abs(delta_p) >= 5:
             self._analyze_unknown_flank(abs(delta_p))
 
         return active_isolated_wattage, unknown_rest
