@@ -1,9 +1,9 @@
 {
   "domain": "powersense",
   "name": "PowerSense AI Engine",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "documentation": "https://github.com/BryanGeldof/powersense",
-  "dependencies": [],
+  "dependencies": ["http"],
   "codeowners": [],
   "config_flow": true,
   "iot_class": "local_push",
