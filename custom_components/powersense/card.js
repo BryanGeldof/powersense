@@ -2,9 +2,9 @@ class PowerSenseCard extends HTMLElement {
   set hass(hass) {
     if (!this.content) {
       this.innerHTML = `
-        <ha-card header="🤖 PowerSense Realtime Status">
+        <ha-card header="🤖 PowerSense AI Matrix Overzicht">
           <div class="card-content" style="padding: 16px; font-family: sans-serif;">
-            <div id="total-banner" style="font-size: 24px; font-weight: bold; margin-bottom: 15px; text-align: center;">-- W</div>
+            <div id="total-banner" style="font-size: 24px; font-weight: bold; margin-bottom: 15px; text-align: center; color: var(--primary-color);">-- W</div>
             
             <div class="progress-bar-container" style="display: flex; height: 24px; width: 100%; border-radius: 12px; overflow: hidden; background-color: var(--secondary-background-color); margin-bottom: 20px;">
               <div id="bar-known" style="background-color: #4CAF50; transition: width 0.5s ease;"></div>
@@ -13,16 +13,21 @@ class PowerSenseCard extends HTMLElement {
             </div>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; font-size: 14px;">
-              <div style="color: #4CAF50;">● Bekende Apparaten: <span id="txt-known">0W</span></div>
+              <div style="color: #4CAF50;">● Geregistreerd Actief: <span id="txt-known">0W</span></div>
               <div style="color: #FFC107;">● Baseload (Sluimer): <span id="txt-base">0W</span></div>
               <div style="color: #2196F3;">● Onbekend Restant: <span id="txt-unknown">0W</span></div>
-              <div style="color: var(--primary-text-color);">● AI Herkenning: <span id="txt-eff">100%</span></div>
+              <div style="color: var(--primary-text-color);">● AI Efficiëntie: <span id="txt-eff">100%</span></div>
             </div>
 
             <hr style="border: 0; border-top: 1px solid var(--divider-color); margin: 15px 0;">
             
-            <div style="font-weight: bold; margin-bottom: 8px;">Actieve Gedetecteerde Apparaten:</div>
-            <div id="active-list" style="font-size: 14px; line-height: 1.6;"></div>
+            <div style="font-weight: bold; margin-bottom: 8px; color: var(--primary-text-color);">⚡ Live Status Apparaten:</div>
+            <div id="active-list" style="font-size: 14px; line-height: 1.6; margin-bottom: 15px;"></div>
+
+            <hr style="border: 0; border-top: 1px solid var(--divider-color); margin: 15px 0;">
+
+            <div style="font-weight: bold; margin-bottom: 8px; color: var(--primary-text-color);">📦 Gekoppelde AI Database (Power Stamps):</div>
+            <div id="database-list" style="font-size: 13px; max-height: 250px; overflow-y: auto; background: var(--table-row-alternative-background-color); padding: 8px; border-radius: 6px;"></div>
           </div>
         </ha-card>
       `;
@@ -35,7 +40,7 @@ class PowerSenseCard extends HTMLElement {
     const effObj = hass.states[effEntityId];
 
     if (!stateObj) {
-      this.querySelector('#total-banner').innerText = "Sensor niet gevonden";
+      this.querySelector('#total-banner').innerText = "Wachten op AI data...";
       return;
     }
 
@@ -47,86 +52,56 @@ class PowerSenseCard extends HTMLElement {
     let known = total - baseload - unknown;
     if (known < 0) known = 0;
 
-    this.querySelector('#total-banner').innerText = `Live Huisverbruik: ${total} W`;
+    this.querySelector('#total-banner').innerText = `${total} W`;
     this.querySelector('#txt-known').innerText = `${known} W`;
     this.querySelector('#txt-base').innerText = `${baseload} W`;
     this.querySelector('#txt-unknown').innerText = `${unknown} W`;
     if (effObj) this.querySelector('#txt-eff').innerText = `${effObj.state}%`;
 
     const maxVal = total > 0 ? total : 1;
-    const pctKnown = (known / maxVal) * 100;
-    const pctBase = (baseload / maxVal) * 100;
-    const pctUnknown = (unknown / maxVal) * 100;
+    this.querySelector('#bar-known').style.width = `${(known / maxVal) * 100}%`;
+    this.querySelector('#bar-baseload').style.width = `${(baseload / maxVal) * 100}%`;
+    this.querySelector('#bar-unknown').style.width = `${(unknown / maxVal) * 100}%`;
 
-    this.querySelector('#bar-known').style.width = `${pctKnown}%`;
-    this.querySelector('#bar-baseload').style.width = `${pctBase}%`;
-    this.querySelector('#bar-unknown').style.width = `${pctUnknown}%`;
+    // 1. Live Actieve Apparaten
+    let activeHtml = "";
+    let dbHtml = `<table style="width:100%; text-align:left; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid var(--divider-color); font-weight:bold;">
+                      <th style="padding:4px;">Apparaat</th>
+                      <th style="padding:4px; text-align:right;">Power Stamp</th>
+                    </tr>`;
 
-    let listHtml = "";
-    let activeCount = 0;
-    if (attrs.registered_appliances) {
+    if (attrs.registered_appliances && Object.keys(attrs.registered_appliances).length > 0) {
       for (const [name, app] of Object.entries(attrs.registered_appliances)) {
+        // Toevoegen aan database tabel
+        dbHtml += `<tr style="border-bottom: 1px solid rgba(0,0,0,0.05);">
+                    <td style="padding:6px 4px;">🔹 ${name}</td>
+                    <td style="padding:6px 4px; text-align:right; font-weight:bold; color:#4CAF50;">${app.mean_watt} W</td>
+                   </tr>`;
+
+        // Toevoegen aan live-lijst indien actief
         if (app.active) {
-          activeCount++;
-          listHtml += `<div style="display: flex; justify-content: space-between; background: rgba(76, 175, 80, 0.1); padding: 4px 8px; border-radius: 4px; margin-bottom: 4px;">
-            <span>⚡ <b>${name}</b></span>
-            <span>${app.mean_watt} W</span>
+          activeHtml += `<div style="display: flex; justify-content: space-between; background: rgba(76, 175, 80, 0.1); padding: 6px 10px; border-radius: 6px; margin-bottom: 5px; border-left: 4px solid #4CAF50;">
+            <span>🟢 <b>${name}</b></span>
+            <span style="font-weight:bold;">${app.mean_watt} W</span>
           </div>`;
         }
       }
+    } else {
+      dbHtml += `<tr><td colspan="2" style="padding:10px; text-align:center; color:var(--secondary-text-color); font-style:italic;">Nog geen apparaten getraind. Start de boost-modus!</td></tr>`;
+    }
+    dbHtml += `</table>`;
+
+    if (!activeHtml) {
+      activeHtml = `<div style="color: var(--secondary-text-color); font-style: italic; padding: 4px;">Alle bekende apparaten staan momenteek uit.</div>`;
     }
 
-    if (activeCount === 0) {
-      listHtml = `<div style="color: var(--secondary-text-color); font-style: italic;">Geen specifieke apparaten actief gedetecteerd.</div>`;
-    }
-
-    this.querySelector('#active-list').innerHTML = listHtml;
-
-    // ---- NIEUW: Onbekende clusters labelen vanuit de kaart ----
-    let clusterHtml = "";
-    if (attrs.temporary_clusters) {
-      for (const [clusterId, cluster] of Object.entries(attrs.temporary_clusters)) {
-        clusterHtml += `
-          <div style="display: flex; gap: 6px; align-items: center; background: rgba(33, 150, 243, 0.1); padding: 6px 8px; border-radius: 4px; margin-bottom: 6px;">
-            <span style="flex-shrink: 0;">❓ ${cluster.mean_watt} W</span>
-            <input type="text" placeholder="Naam apparaat..." id="input-${clusterId}" style="flex: 1; padding: 4px; border-radius: 4px; border: 1px solid var(--divider-color); min-width: 0;">
-            <button data-cluster="${clusterId}" class="btn-save" style="padding: 4px 8px; border-radius: 4px; border: none; background: #4CAF50; color: white; cursor: pointer; flex-shrink: 0;">Opslaan</button>
-            <button data-cluster="${clusterId}" class="btn-ignore" style="padding: 4px 8px; border-radius: 4px; border: none; background: #9E9E9E; color: white; cursor: pointer; flex-shrink: 0;">Onbekend</button>
-          </div>`;
-      }
-    }
-    if (!clusterHtml) {
-      clusterHtml = `<div style="color: var(--secondary-text-color); font-style: italic;">Geen nieuwe onbekende apparaten op dit moment.</div>`;
-    }
-
-    if (!this.querySelector('#unknown-clusters')) {
-      this.content.insertAdjacentHTML('beforeend', `
-        <hr style="border: 0; border-top: 1px solid var(--divider-color); margin: 15px 0;">
-        <div style="font-weight: bold; margin-bottom: 8px;">Nog Niet Herkend:</div>
-        <div id="unknown-clusters"></div>
-      `);
-    }
-    this.querySelector('#unknown-clusters').innerHTML = clusterHtml;
-
-    this.querySelectorAll('.btn-save').forEach(btn => {
-      btn.onclick = () => {
-        const clusterId = btn.dataset.cluster;
-        const input = this.querySelector(`#input-${clusterId}`);
-        const name = input.value.trim();
-        if (!name) return;
-        hass.callService('powersense', 'label_cluster', { cluster_id: clusterId, name: name });
-      };
-    });
-
-    this.querySelectorAll('.btn-ignore').forEach(btn => {
-      btn.onclick = () => {
-        hass.callService('powersense', 'ignore_cluster', { cluster_id: btn.dataset.cluster });
-      };
-    });
+    this.querySelector('#active-list').innerHTML = activeHtml;
+    this.querySelector('#database-list').innerHTML = dbHtml;
   }
 
   getCardSize() {
-    return 3;
+    return 4;
   }
 }
 
@@ -137,7 +112,7 @@ if (!window.customCards.some(c => c.type === 'powersense-card')) {
   window.customCards.push({
     type: "powersense-card",
     name: "PowerSense AI Matrix Card",
-    description: "Toont realtime welke apparaten stroom verbruiken en wat nog onbekend is.",
+    description: "Toont de live stroom-deconstructie en alle opgeslagen power stamps.",
     preview: true
   });
 }
