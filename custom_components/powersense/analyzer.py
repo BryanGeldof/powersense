@@ -34,7 +34,6 @@ class PeakSenseClusterAnalyzer:
             try:
                 with open(self.storage_path, "r") as f:
                     self.registered_appliances = json.load(f)
-                _LOGGER.info(f"[PowerSense] {len(self.registered_appliances)} apparaten geladen.")
             except Exception as e:
                 _LOGGER.error(f"[PowerSense] Database laad-fout: {e}")
 
@@ -53,7 +52,7 @@ class PeakSenseClusterAnalyzer:
         for item in APPLIANCE_SUGGESTIONS:
             if item["min"] <= wattage <= item["max"]:
                 return item["labels"]
-        return "Onbekend type apparaat"
+        return "Onbekend Apparaat"
 
     def process_reading(self, current_total):
         try:
@@ -92,15 +91,14 @@ class PeakSenseClusterAnalyzer:
                     if min_marge <= delta_p <= max_marge:
                         app["active"] = True
                         active_isolated_wattage += float(app["mean_watt"])
-                        _LOGGER.info(f"[PowerSense] Ingeschakeld: {name}")
 
         if delta_p < -5 and best_negative_match:
             app = self.registered_appliances[best_negative_match]
             app["active"] = False
             active_isolated_wattage = max(0, active_isolated_wattage - float(app["mean_watt"]))
-            _LOGGER.info(f"[PowerSense] Uitgeschakeld: {best_negative_match}")
 
         unknown_rest = current_total - active_isolated_wattage - self.baseload
+        if unknown_rest < 0: unknown_rest = 0
 
         if abs(delta_p) >= 5:
             self._analyze_unknown_flank(abs(delta_p))
@@ -121,7 +119,7 @@ class PeakSenseClusterAnalyzer:
                 target_repetitions = 1 if self.boost_active else MIN_REPETITIONS_FOR_NOTIF
                 if data["count"] >= target_repetitions and not data["notified"]:
                     data["notified"] = True
-                    self._trigger_hass_notification(cluster_id, int(data["mean_watt"]))
+                    self._auto_register_cluster(cluster_id, int(data["mean_watt"]))
                 break
 
         if not match_found:
@@ -134,69 +132,43 @@ class PeakSenseClusterAnalyzer:
             }
             if self.boost_active:
                 self.temporary_clusters[new_id]["notified"] = True
-                self._trigger_hass_notification(new_id, int(round(flank_value)))
+                self._auto_register_cluster(new_id, int(round(flank_value)))
+
+    def _auto_register_cluster(self, cluster_id, wattage):
+        """Genereert autonoom een logische naam en slaat deze direct op."""
+        suggestion = self._get_suggestion(wattage)
+        
+        # Tel hoeveel van dit type we al hebben om dubbele namen te voorkomen
+        existing_count = sum(1 for name in self.registered_appliances.keys() if name.startswith(suggestion))
+        suffix = f" #{existing_count + 1}" if existing_count > 0 else ""
+        
+        auto_name = f"{suggestion}{suffix} ({wattage}W)"
+        self.save_appliance(auto_name, wattage)
+        
+        # Verwijder uit tijdelijke lijst aangezien hij nu permanent is
+        if cluster_id in self.temporary_clusters:
+            del self.temporary_clusters[cluster_id]
+            
+        # Trigger optionele notificatie dat er een autodetectie heeft plaatsgevonden
+        self._trigger_hass_notification(auto_name, wattage)
 
     def _garbage_collection(self):
         current_time = time.time()
-        to_delete = []
-        for cluster_id, data in self.temporary_clusters.items():
-            if (current_time - data["last_seen"]) > CLUSTER_MAX_AGE_SECONDS and data["count"] < MIN_REPETITIONS_FOR_NOTIF:
-                to_delete.append(cluster_id)
-        for cluster_id in to_delete:
-            del self.temporary_clusters[cluster_id]
+        to_delete = [cid for cid, d in self.temporary_clusters.items() if (current_time - d["last_seen"]) > CLUSTER_MAX_AGE_SECONDS]
+        for cid in to_delete:
+            del self.temporary_clusters[cid]
 
-    def _trigger_hass_notification(self, cluster_id, wattage):
+    def _trigger_hass_notification(self, name, wattage):
         entries = self.hass.config_entries.async_entries(DOMAIN)
-        if not entries:
-            return
-        config_entry = entries[0]
-        
-        devices = config_entry.data.get("notification_devices", ["persistent_notification"])
-        suggestion = self._get_suggestion(wattage)
-        clean_notification_id = f"ps_{wattage}"
+        if not entries: return
+        devices = entries[0].data.get("notification_devices", ["persistent_notification"])
 
         for device in devices:
             if device == "persistent_notification":
-                try:
-                    self.hass.async_create_task(
-                        self.hass.services.async_call(
-                            "persistent_notification",
-                            "create",
-                            {
-                                "title": "🤖 PowerSense: Nieuw Apparaat!",
-                                "message": f"Verbruik van circa **{wattage}W** ontdekt.<br>**Vermoedelijk:** {suggestion}.",
-                                "notification_id": clean_notification_id
-                            }
-                        )
-                    )
-                    _LOGGER.info(f"[PowerSense] UI Melding aangestuurd via bus.")
-                except Exception as e:
-                    _LOGGER.error(f"[PowerSense] UI melding-fout: {e}")
-            elif device.startswith("notify."):
-                try:
-                    domain_service = device.split(".")
-                    self.hass.async_create_task(
-                        self.hass.services.async_call(
-                            domain_service[0],
-                            domain_service[1],
-                            {
-                                "title": "🤖 PowerSense: Nieuw Apparaat!",
-                                "message": f"Verbruik van {wattage}W ontdekt.\nSuggestie: {suggestion}",
-                                "data": {
-                                    "clickAction": "/config/integrations",
-                                    "url": "/config/integrations",
-                                    "actions": [
-                                        {
-                                            "action": f"POWERSENSE_LABEL_{cluster_id}",
-                                            "title": "Geef naam",
-                                            "behavior": "text_input",
-                                            "text_input_button_title": "Opslaan"
-                                        }
-                                    ]
-                                }
-                            }
-                        )
-                    )
-                    _LOGGER.info(f"[PowerSense] Pushbericht verzonden.")
-                except Exception as e:
-                    _LOGGER.error(f"[PowerSense] GSM notificatie-fout: {e}")
+                self.hass.async_create_task(
+                    self.hass.services.async_call("persistent_notification", "create", {
+                        "title": "🤖 PowerSense Autodetectie!",
+                        "message": f"Nieuw apparaat automatisch ingeleerd:<br>**{name}**",
+                        "notification_id": f"ps_{wattage}"
+                    })
+                )
