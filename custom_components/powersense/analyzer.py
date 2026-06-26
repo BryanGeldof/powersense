@@ -3,12 +3,16 @@ import math
 import time
 import os
 import json
+import statistics
 from .const import (
     DOMAIN,
     MATCH_TOLERANCE_PERCENT,
-    MIN_REPETITIONS_FOR_NOTIF,
     CLUSTER_MAX_AGE_SECONDS,
-    APPLIANCE_SUGGESTIONS
+    APPLIANCE_SUGGESTIONS,
+    MIN_REPETITIONS_CLEAR,
+    MIN_REPETITIONS_VAGUE,
+    CLEAR_PEAK_CV_THRESHOLD,
+    MIN_ACTIVE_DURATION_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -18,6 +22,7 @@ class PeakSenseClusterAnalyzer:
     def __init__(self, hass):
         self.hass = hass
         self.last_total_power = None
+        self.last_change_time = None
         self.baseload = 0
         self.temporary_clusters = {}
         self.registered_appliances = {}
@@ -42,7 +47,7 @@ class PeakSenseClusterAnalyzer:
     def save_appliance(self, name, mean_watt):
         self.registered_appliances[str(name)] = {
             "mean_watt": int(round(float(mean_watt))),
-            "active": False
+            "active": False,
         }
         try:
             with open(self.storage_path, "w") as f:
@@ -62,8 +67,11 @@ class PeakSenseClusterAnalyzer:
         except (ValueError, TypeError):
             return 0, 0
 
+        now = time.time()
+
         if self.last_total_power is None:
             self.last_total_power = current_total
+            self.last_change_time = now
             return 0, current_total
 
         delta_p = current_total - self.last_total_power
@@ -92,11 +100,13 @@ class PeakSenseClusterAnalyzer:
                     max_marge = float(app["mean_watt"]) * (1 + MATCH_TOLERANCE_PERCENT)
                     if min_marge <= delta_p <= max_marge:
                         app["active"] = True
+                        app["active_since"] = now
                         active_isolated_wattage += float(app["mean_watt"])
 
         if delta_p < -5 and best_negative_match:
             app = self.registered_appliances[best_negative_match]
             app["active"] = False
+            app.pop("active_since", None)
             active_isolated_wattage = max(0, active_isolated_wattage - float(app["mean_watt"]))
 
         unknown_rest = current_total - active_isolated_wattage - self.baseload
@@ -104,47 +114,85 @@ class PeakSenseClusterAnalyzer:
             unknown_rest = 0
 
         if abs(delta_p) >= 5:
-            self._analyze_unknown_flank(abs(delta_p))
+            self._analyze_unknown_flank(abs(delta_p), now)
 
         return int(active_isolated_wattage), int(unknown_rest)
 
-    def _analyze_unknown_flank(self, flank_value):
-        match_found = False
+    def _analyze_unknown_flank(self, flank_value, now):
         flank_value = float(flank_value)
+        match_found = False
 
         for cluster_id, data in self.temporary_clusters.items():
             if math.isclose(flank_value, float(data["mean_watt"]), rel_tol=MATCH_TOLERANCE_PERCENT):
+                # Controleer minimale actieve duur: flank moet minstens MIN_ACTIVE_DURATION_SECONDS
+                # na de vorige flank komen (apparaat was lang genoeg aan)
+                time_since_last = now - data["last_seen"]
+                if time_since_last < MIN_ACTIVE_DURATION_SECONDS:
+                    _LOGGER.debug(
+                        f"[PowerSense] Cluster {cluster_id} te snel herhaald "
+                        f"({time_since_last:.1f}s < {MIN_ACTIVE_DURATION_SECONDS}s) — genegeerd."
+                    )
+                    data["last_seen"] = now  # reset timer maar tel niet mee
+                    match_found = True
+                    break
+
+                # Bijhouden van alle gemeten flanken voor variatieberekening
+                data["samples"].append(flank_value)
                 data["count"] += 1
                 data["mean_watt"] = round(0.9 * float(data["mean_watt"]) + 0.1 * flank_value)
-                data["last_seen"] = time.time()
+                data["last_seen"] = now
                 match_found = True
 
-                target_repetitions = 1 if self.boost_active else MIN_REPETITIONS_FOR_NOTIF
-                if data["count"] >= target_repetitions and not data["notified"]:
+                # Bepaal drempel op basis van consistentie (variatiecoëfficiënt)
+                required = self._required_repetitions(data["samples"])
+                data["required"] = required
+
+                if data["count"] >= required and not data["notified"]:
                     data["notified"] = True
                     self._auto_register_cluster(cluster_id, int(data["mean_watt"]))
+                else:
+                    _LOGGER.debug(
+                        f"[PowerSense] Cluster {cluster_id}: {data['count']}/{required} herhalingen "
+                        f"(CV={self._cv(data['samples']):.3f})"
+                    )
                 break
 
         if not match_found:
-            new_id = f"cluster_{int(time.time())}_{round(flank_value)}"
+            new_id = f"cluster_{int(now)}_{round(flank_value)}"
             self.temporary_clusters[new_id] = {
                 "mean_watt": int(round(flank_value)),
                 "count": 1,
+                "samples": [flank_value],
                 "notified": False,
-                "last_seen": time.time(),
+                "last_seen": now,
+                "required": MIN_REPETITIONS_VAGUE,  # start conservatief
             }
             if self.boost_active:
                 self.temporary_clusters[new_id]["notified"] = True
                 self._auto_register_cluster(new_id, int(round(flank_value)))
 
+    def _cv(self, samples):
+        """Variatiecoëfficiënt: standaardafwijking / gemiddelde. Lager = consistenter."""
+        if len(samples) < 2:
+            return 1.0  # onbekend → conservatief behandelen
+        mean = statistics.mean(samples)
+        if mean == 0:
+            return 1.0
+        return statistics.stdev(samples) / mean
+
+    def _required_repetitions(self, samples):
+        """Bepaal vereist aantal herhalingen op basis van consistentie."""
+        cv = self._cv(samples)
+        if cv < CLEAR_PEAK_CV_THRESHOLD:
+            return MIN_REPETITIONS_CLEAR   # consistent signaal → 3
+        return MIN_REPETITIONS_VAGUE       # variabel signaal → 25
+
     def _auto_register_cluster(self, cluster_id, wattage):
-        """Genereert autonoom een logische naam en slaat deze direct op.
+        """Registreert automatisch een apparaat na voldoende bewijs.
         
-        Geen persistente notificatie — de aanmaak van sensor.power_<naam>
-        is zelf het signaal dat een nieuw apparaat herkend is.
+        Geen HA-notificatie — de aanmaak van sensor.power_<naam> is het signaal.
         """
         suggestion = self._get_suggestion(wattage)
-
         existing_count = sum(
             1 for name in self.registered_appliances.keys()
             if name.startswith(suggestion)
@@ -157,7 +205,10 @@ class PeakSenseClusterAnalyzer:
         if cluster_id in self.temporary_clusters:
             del self.temporary_clusters[cluster_id]
 
-        _LOGGER.info(f"[PowerSense] Nieuw apparaat automatisch ingeleerd: {auto_name} — sensor.power_{self._slugify(auto_name)} wordt aangemaakt.")
+        _LOGGER.info(
+            f"[PowerSense] Nieuw apparaat ingeleerd: '{auto_name}' — "
+            f"sensor.power_{self._slugify(auto_name)} wordt aangemaakt."
+        )
 
     def _slugify(self, name: str) -> str:
         import re
