@@ -1,7 +1,7 @@
 {
   "domain": "powersense",
   "name": "PowerSense AI Engine",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "documentation": "https://github.com/BryanGeldof/powersense",
   "dependencies": ["http"],
   "codeowners": [],
