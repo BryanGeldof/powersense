@@ -4,14 +4,15 @@ import time
 import os
 import json
 from .const import (
-    DOMAIN, 
-    MATCH_TOLERANCE_PERCENT, 
-    MIN_REPETITIONS_FOR_NOTIF, 
-    CLUSTER_MAX_AGE_SECONDS, 
+    DOMAIN,
+    MATCH_TOLERANCE_PERCENT,
+    MIN_REPETITIONS_FOR_NOTIF,
+    CLUSTER_MAX_AGE_SECONDS,
     APPLIANCE_SUGGESTIONS
 )
 
 _LOGGER = logging.getLogger(__name__)
+
 
 class PeakSenseClusterAnalyzer:
     def __init__(self, hass):
@@ -21,10 +22,10 @@ class PeakSenseClusterAnalyzer:
         self.temporary_clusters = {}
         self.registered_appliances = {}
         self.boost_active = False
-        
+
         self.storage_path = hass.config.path("powersense_data.json")
         self._load_appliances_from_storage()
-        
+
     def set_boost_mode(self, active: bool):
         self.boost_active = active
         _LOGGER.info(f"[PowerSense] Boost-modus status gewijzigd naar: {active}")
@@ -34,6 +35,7 @@ class PeakSenseClusterAnalyzer:
             try:
                 with open(self.storage_path, "r") as f:
                     self.registered_appliances = json.load(f)
+                _LOGGER.info(f"[PowerSense] {len(self.registered_appliances)} apparaten geladen uit opslag.")
             except Exception as e:
                 _LOGGER.error(f"[PowerSense] Database laad-fout: {e}")
 
@@ -98,7 +100,8 @@ class PeakSenseClusterAnalyzer:
             active_isolated_wattage = max(0, active_isolated_wattage - float(app["mean_watt"]))
 
         unknown_rest = current_total - active_isolated_wattage - self.baseload
-        if unknown_rest < 0: unknown_rest = 0
+        if unknown_rest < 0:
+            unknown_rest = 0
 
         if abs(delta_p) >= 5:
             self._analyze_unknown_flank(abs(delta_p))
@@ -108,14 +111,14 @@ class PeakSenseClusterAnalyzer:
     def _analyze_unknown_flank(self, flank_value):
         match_found = False
         flank_value = float(flank_value)
-        
+
         for cluster_id, data in self.temporary_clusters.items():
             if math.isclose(flank_value, float(data["mean_watt"]), rel_tol=MATCH_TOLERANCE_PERCENT):
                 data["count"] += 1
                 data["mean_watt"] = round(0.9 * float(data["mean_watt"]) + 0.1 * flank_value)
                 data["last_seen"] = time.time()
                 match_found = True
-                
+
                 target_repetitions = 1 if self.boost_active else MIN_REPETITIONS_FOR_NOTIF
                 if data["count"] >= target_repetitions and not data["notified"]:
                     data["notified"] = True
@@ -128,47 +131,45 @@ class PeakSenseClusterAnalyzer:
                 "mean_watt": int(round(flank_value)),
                 "count": 1,
                 "notified": False,
-                "last_seen": time.time()
+                "last_seen": time.time(),
             }
             if self.boost_active:
                 self.temporary_clusters[new_id]["notified"] = True
                 self._auto_register_cluster(new_id, int(round(flank_value)))
 
     def _auto_register_cluster(self, cluster_id, wattage):
-        """Genereert autonoom een logische naam en slaat deze direct op."""
+        """Genereert autonoom een logische naam en slaat deze direct op.
+        
+        Geen persistente notificatie — de aanmaak van sensor.power_<naam>
+        is zelf het signaal dat een nieuw apparaat herkend is.
+        """
         suggestion = self._get_suggestion(wattage)
-        
-        # Tel hoeveel van dit type we al hebben om dubbele namen te voorkomen
-        existing_count = sum(1 for name in self.registered_appliances.keys() if name.startswith(suggestion))
+
+        existing_count = sum(
+            1 for name in self.registered_appliances.keys()
+            if name.startswith(suggestion)
+        )
         suffix = f" #{existing_count + 1}" if existing_count > 0 else ""
-        
         auto_name = f"{suggestion}{suffix} ({wattage}W)"
+
         self.save_appliance(auto_name, wattage)
-        
-        # Verwijder uit tijdelijke lijst aangezien hij nu permanent is
+
         if cluster_id in self.temporary_clusters:
             del self.temporary_clusters[cluster_id]
-            
-        # Trigger optionele notificatie dat er een autodetectie heeft plaatsgevonden
-        self._trigger_hass_notification(auto_name, wattage)
+
+        _LOGGER.info(f"[PowerSense] Nieuw apparaat automatisch ingeleerd: {auto_name} — sensor.power_{self._slugify(auto_name)} wordt aangemaakt.")
+
+    def _slugify(self, name: str) -> str:
+        import re
+        slug = name.lower()
+        slug = re.sub(r"[^a-z0-9]+", "_", slug)
+        return slug.strip("_")
 
     def _garbage_collection(self):
         current_time = time.time()
-        to_delete = [cid for cid, d in self.temporary_clusters.items() if (current_time - d["last_seen"]) > CLUSTER_MAX_AGE_SECONDS]
+        to_delete = [
+            cid for cid, d in self.temporary_clusters.items()
+            if (current_time - d["last_seen"]) > CLUSTER_MAX_AGE_SECONDS
+        ]
         for cid in to_delete:
             del self.temporary_clusters[cid]
-
-    def _trigger_hass_notification(self, name, wattage):
-        entries = self.hass.config_entries.async_entries(DOMAIN)
-        if not entries: return
-        devices = entries[0].data.get("notification_devices", ["persistent_notification"])
-
-        for device in devices:
-            if device == "persistent_notification":
-                self.hass.async_create_task(
-                    self.hass.services.async_call("persistent_notification", "create", {
-                        "title": "🤖 PowerSense Autodetectie!",
-                        "message": f"Nieuw apparaat automatisch ingeleerd:<br>**{name}**",
-                        "notification_id": f"ps_{wattage}"
-                    })
-                )
